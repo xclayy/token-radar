@@ -76,24 +76,106 @@
     if (age < 365) return 45;
     return 30;
   }
-  function actionFor(p, capital, chain) {
+  // The farm playbook, one row per kind of protocol: the same table lib/model.ts carries, so the
+  // detail view recomputes the same plan board.json carries. The two copies must stay identical.
+  // Keys are matched as substrings of the lowercase category, in order, first match wins.
+  function farmPlaybook(p, capital, chain) {
     var c = (p.category || '').toLowerCase();
     var name = p.name;
-    if (c.indexOf('risk curator') >= 0 || c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return 'Deposit $' + capital + ' into a ' + name + ' vault on ' + chain + ' and keep the shares for the whole season.';
-    if (c.indexOf('basis trading') >= 0) return 'Deposit $' + capital + ' of USDC into ' + name + "'s basis strategy on " + chain + ' and keep the position open.';
-    if (c.indexOf('rwa') >= 0) return 'Mint $' + capital + " of the protocol's tokenised yield asset through " + name + ' on ' + chain + ' and hold it.';
-    if (c.indexOf('lending') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'Supply $' + capital + ' of USDC to ' + name + ' on ' + chain + ' and keep the position open.';
-    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return 'Provide $' + capital + ' of liquidity to ' + name + "'s main pool on " + chain + ' and keep the position open.';
-    if (c.indexOf('bridge') >= 0) return 'Bridge $' + capital + ' of USDC to ' + chain + ' through ' + name + ' and use the bridged funds in its app.';
-    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return "Stake $" + capital + " of the chain's staking asset through " + name + ' and keep the receipt token.';
-    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return 'Deposit $' + capital + ' of USDC as margin on ' + name + ' and open one small hedged trade.';
-    if (c.indexOf('prediction') >= 0) return 'Fund $' + capital + ' and place one market position on ' + name + '.';
-    if (c.indexOf('stable') >= 0) return 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + '.';
-    if (c.indexOf('insurance') >= 0) return 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy active.';
-    if (c.indexOf('payment') >= 0) return 'Route $' + capital + ' of payments through ' + name + ' on ' + chain + ' and keep the account funded.';
-    if (c.indexOf('governance') >= 0) return 'Lock $' + capital + ' of voting power with ' + name + ' on ' + chain + ' and vote on one proposal.';
-    if (c.indexOf('chain') >= 0) return 'Bridge $' + capital + " to the chain and use " + name + "'s native app on " + chain + ' once a week.';
-    return 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.';
+    var art = /^[aeiou]/i.test(name) ? 'an' : 'a';
+    if (c.indexOf('index') >= 0) return {
+      action: 'Buy $' + capital + ' of the ' + name + ' index on ' + chain + ' and hold it.',
+      weekly: 'Rebalance a small amount into the index.',
+      claim: 'Claim index rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0) return {
+      action: 'Deposit $' + capital + ' into ' + art + ' ' + name + ' vault on ' + chain + ' and keep the shares for the whole season.',
+      weekly: 'Move a small amount between two of ' + name + '\u2019s vaults, or claim and restake the vault rewards.',
+      claim: 'Claim vault rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('basis trading') >= 0) return {
+      action: 'Deposit $' + capital + ' of USDC into ' + name + '\u2019s basis strategy on ' + chain + ' and keep the position open.',
+      weekly: 'Check the funding rate and roll a small part of the basis position.',
+      claim: 'Claim basis yield from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('rwa') >= 0) return {
+      action: 'Mint $' + capital + ' of the protocol\u2019s tokenised yield asset through ' + name + ' on ' + chain + ' and hold it.',
+      weekly: 'Check the yield accrual on the tokenised asset and claim any yield into the same position.',
+      claim: 'Claim the accrued yield from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('lending') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return {
+      action: 'Supply $' + capital + ' of USDC to ' + name + ' on ' + chain + ' and keep the position open.',
+      weekly: 'Borrow a small amount against the deposit and repay it, so the position shows both sides.',
+      claim: 'Claim supply rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0) return {
+      action: 'Provide $' + capital + ' of liquidity to ' + name + '\u2019s main pool on ' + chain + ' and keep the position open.',
+      weekly: 'Swap a small amount through the pool and claim any liquidity rewards.',
+      claim: 'Claim pool fees and rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('liquidity manager') >= 0) return {
+      action: 'Deposit $' + capital + ' into ' + art + ' ' + name + ' managed vault on ' + chain + ' and keep the shares for the whole season.',
+      weekly: 'Claim and restake a small amount of the vault rewards.',
+      claim: 'Claim vault rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('bridge') >= 0) return {
+      action: 'Bridge $' + capital + ' of USDC to ' + chain + ' through ' + name + ' and use the bridged funds in its app.',
+      weekly: 'Bridge a small amount out and back through ' + name + '.',
+      claim: 'Check ' + name + '\u2019s rewards page for bridge volume points, only from the link it publishes.' };
+    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return {
+      action: 'Stake $' + capital + ' of the chain\u2019s staking asset through ' + name + ' and keep the receipt token.',
+      weekly: 'Restake the staking rewards into the same position.',
+      claim: 'Claim staking rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0) return {
+      action: 'Deposit $' + capital + ' of USDC as margin on ' + name + ' and open one small hedged trade.',
+      weekly: 'Open and close one small hedged trade on ' + name + '.',
+      claim: 'Claim trading fee rebates from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('prediction') >= 0) return {
+      action: 'Fund $' + capital + ' and place one market position on ' + name + '.',
+      weekly: 'Place one small market position and let it settle.',
+      claim: 'Claim market winnings and any points from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('stable') >= 0) return {
+      action: 'Mint or deposit $' + capital + ' of the stable asset through ' + name + ' on ' + chain + ' and hold it.',
+      weekly: 'Mint or redeem a small amount of the stable asset through ' + name + '.',
+      claim: 'Claim stability rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('insurance') >= 0) return {
+      action: 'Buy $' + capital + ' of cover from ' + name + ' on ' + chain + ' and keep the policy active.',
+      weekly: 'Review the cover and renew a small part of it.',
+      claim: 'Claim cover rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('payment') >= 0) return {
+      action: 'Route $' + capital + ' of payments through ' + name + ' on ' + chain + ' and keep the account funded.',
+      weekly: 'Route one payment through ' + name + '.',
+      claim: 'Check ' + name + '\u2019s rewards page for payment volume points, only from the link it publishes.' };
+    if (c.indexOf('governance') >= 0) return {
+      action: 'Lock $' + capital + ' of voting power with ' + name + ' on ' + chain + ' and vote on one proposal.',
+      weekly: 'Vote on one live proposal with ' + name + '.',
+      claim: 'Claim voting rewards from ' + name + '\u2019s governance page, only from the link it publishes.' };
+    if (c.indexOf('otc') >= 0) return {
+      action: 'Place $' + capital + ' in an OTC order through ' + name + ' on ' + chain + ' and settle it.',
+      weekly: 'Settle one small OTC order through ' + name + '.',
+      claim: 'Check ' + name + '\u2019s rewards page for trading points, only from the link it publishes.' };
+    if (c.indexOf('farm') >= 0) return {
+      action: 'Deposit $' + capital + ' into ' + name + '\u2019s farm on ' + chain + ' and keep the position open.',
+      weekly: 'Harvest and restake a small amount of farm rewards.',
+      claim: 'Claim farm rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('anchor') >= 0 || c.indexOf('decentralized btc') >= 0) return {
+      action: 'Mint $' + capital + ' of the BTC-backed asset through ' + name + ' on ' + chain + ' and hold it.',
+      weekly: 'Mint or redeem a small amount of the BTC-backed asset through ' + name + '.',
+      claim: 'Claim mint rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('cedefi') >= 0) return {
+      action: 'Deposit $' + capital + ' into ' + name + '\u2019s vault on ' + chain + ' and keep the position open.',
+      weekly: 'Check the vault\u2019s yield and claim any rewards into the same position.',
+      claim: 'Claim vault rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('card') >= 0) return {
+      action: 'Fund $' + capital + ' on the ' + name + ' card on ' + chain + ' and keep the balance active.',
+      weekly: 'Spend a small amount through the ' + name + ' card.',
+      claim: 'Claim card rewards from ' + name + '\u2019s own page, only from the link it publishes.' };
+    if (c.indexOf('chain') >= 0) return {
+      action: 'Bridge $' + capital + ' to the chain and use ' + name + '\u2019s native app on ' + chain + ' once a week.',
+      weekly: 'Use ' + name + '\u2019s native app on ' + chain + ' once.',
+      claim: 'Check ' + name + '\u2019s rewards page for activity points, only from the link it publishes.' };
+    return {
+      action: 'Deposit $' + capital + ' of USDC into ' + name + ' on ' + chain + ' and keep the position open.',
+      weekly: 'Make one qualifying on-chain action on ' + name + ', such as a deposit, a swap or a vote.',
+      claim: 'Open ' + name + '\u2019s own points or rewards page and claim only from the link it publishes.' };
+  }
+  function setupGas(chain) {
+    if (chain === 'Ethereum') return 8;
+    if (chain === 'Bitcoin') return 2;
+    return 4;
   }
   function stepText(step) {
     var s = step.text + ' Cost: ' + step.cost + '. Time: ' + step.time + '.';
@@ -105,14 +187,19 @@
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
-    return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-      { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
+    var play = farmPlaybook(p, capital, chain);
+    var steps = [
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'nothing but the wallet', time: '5 minutes' },
+      { text: play.action, cost: '$' + capital + ' of capital and about $' + setupGas(chain) + ' of gas', time: '15 minutes to set up' },
+      { text: play.weekly, cost: 'no new capital', time: '10 minutes a week' },
       { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
-      { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
-    ].map(stepText);
+      { text: play.claim, cost: 'no fee to check, and never pay to claim', time: '10 minutes' }
+    ];
+    if (p.chains && p.chains.length >= 2) {
+      steps.push({ text: 'Repeat the position on ' + p.chains[1] + ' with half the amount, so the activity is visible on more than one network.', cost: '$' + Math.round(capital / 2) + ' of capital and about $2 of gas', time: '20 minutes' });
+    }
+    steps.push({ text: 'Write the wallet, the dates and every transaction for ' + p.name + ' in a farm log, so you can repeat the position and prove it later.', cost: 'nothing but the log', time: '5 minutes' });
+    return steps.map(stepText);
   }
 
   function readHash() {
@@ -308,7 +395,7 @@
     var calibRows = (DATA.calibration || []).slice(0, 12);
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked. The category multiple is not a guess: it is the median FDV/TVL of the live-token protocols in the same category, measured from this snapshot and shrunk toward the overall median when a category has few live protocols.' }),
+      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked. The category multiple is not a guess: it is the median market-cap/TVL of the live-token protocols in the same category — the snapshot carries market caps, not fully diluted values, so the ratio is named for what it is — measured from this snapshot, winsorised at x' + m.winsor_cap + ' so one tiny protocol cannot set a 400x median, and shrunk toward the overall median when a category has few live protocols.' }),
       el('div', { class: 'formula' },
         'implied = round( tvl_usd x category_multiple x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + 0.02 x min(chains - 1, 4)) )'
       ),
@@ -319,20 +406,20 @@
           el('thead', null, el('tr', null,
             el('th', { scope: 'col', text: 'Category' }),
             el('th', { scope: 'col', text: 'Live protocols' }),
-            el('th', { scope: 'col', text: 'Median FDV/TVL' }),
+            el('th', { scope: 'col', text: 'Median mcap/TVL' }),
             el('th', { scope: 'col', text: 'Multiple used' })
           )),
           el('tbody', null, calibRows.map(function (c) {
             return el('tr', null,
               el('td', { text: c.category }),
               el('td', { text: String(c.live_count) }),
-              el('td', { text: c.median_fdvtvl === null ? 'none' : 'x' + c.median_fdvtvl.toFixed(3) }),
+              el('td', { text: c.median_mcaptvl === null ? 'none' : 'x' + c.median_mcaptvl.toFixed(3) }),
               el('td', { text: 'x' + c.multiple.toFixed(3) })
             );
           }))
         )
       ),
-      el('p', { class: 'note', text: 'Shrinkage: multiple = (n x median + ' + m.prior_weight + ' x overall median) / (n + ' + m.prior_weight + '), clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + ']. Categories with no live protocol use the overall median, x' + m.base_multiple + '.' })
+      el('p', { class: 'note', text: 'Shrinkage: multiple = (n x median + ' + m.prior_weight + ' x overall median) / (n + ' + m.prior_weight + '), clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + ']. The overall median, x' + DATA.overall_multiple.toFixed(3) + ', is the median over live protocols in categories whose token could resemble a new launch; CEX, bridge and liquid-staking receipts are left out because their ratios reflect custody and staking mechanics, not app-token value. Categories with no live protocol use the overall median.' })
     );
   }
 
@@ -372,7 +459,7 @@
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
-        var tail = at >= 0 ? s.slice(at + 1) : '';
+        var tail = at >= 0 ? s.slice(at) : '';
         return el('li', null, el('b', { text: action }), el('span', { class: 'cost', text: tail }));
       }))
     ));
