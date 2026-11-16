@@ -15,13 +15,13 @@ each one. Built for the make.fun bounty
   $50M floor, all scored by the same model)
 - `/output/data.js` — the same board as a JS module for the dashboard
 - `/output/dashboard/` — a static, offline dashboard (`index.html` +
-  `app.css` + `app.js`, 34,843 bytes total, no network)
+  `app.css` + `app.js`, 41,510 bytes total, no network)
 - `/output/screenshots/` — 3 screenshots of the dashboard (board, detail
   view, filtered view), each 1440x900 PNG
 - `/output/dossier.json` — built with `buildDossier` from
   `vendor/makefun-board.ts` (kit code, copied byte-for-byte)
 
-## The model (radar-2)
+## The model (radar-3)
 
 Implied value is a model, not a promise:
 
@@ -29,10 +29,20 @@ Implied value is a model, not a promise:
 implied = round(TVL × category_multiple × growth × maturity × breadth)
 ```
 
-- **category_multiple** — the shrunk median FDV/TVL of live-token protocols
-  in the same category, measured from the snapshot itself (prior weight 3
-  toward the overall median 0.2138, clamped to [0.05, 1.00]). Categories
-  with no live protocol take the overall median.
+- **category_multiple** — the shrunk median market-cap/TVL of live-token protocols
+  in the same category, measured from the snapshot itself (the snapshot carries
+  market caps, not fully diluted values, so the ratio is named for what it is).
+  Each live protocol's ratio is winsorised at ×5 before any median is taken, so one
+  tiny protocol cannot set a 400× median (radar-2's Prediction Market median was
+  400.2× from a single protocol, Rain). The overall median that shrinks every
+  category comes from a clean prior pool only — CEX, bridge and liquid-staking
+  receipts are left out, because their ratios reflect custody and staking
+  mechanics, not app-token value — and the shrinkage is stronger than radar-2
+  (prior weight 5 toward the overall median 0.241, clamped to [0.05, 1.00]).
+  Categories with no live protocol take the overall median. The Risk Curators
+  multiple falls from 0.904 to 0.696: it rested on one live protocol, Api3 (an
+  oracle, not a vault curator), and there is no true curator comp in the snapshot
+  (Morpho Blue is pre-token).
 - **growth** — `1 + clamp(change_7d, -60, 120)/100 × 0.5`
 - **maturity** — `0.6 + min(age_days, 1095)/1095 × 0.4` (unknown age = 365d)
 - **breadth** — `1 + 0.02 × min(chains - 1, 4)`
@@ -47,20 +57,26 @@ states for the watchlist, applied to the early rows too — the first build
 ranked WBTC #6 and Binance staked ETH #7, which is exactly what the rules
 say is not a launch.
 
-**Farm plans.** 6 steps per protocol, each 20–600 characters: fresh wallet,
-a category-specific qualifying action with capital sized by TVL tier
-($50/$100/$150/$250), a weekly qualifying action, a hold period sized by
-age (30/45/60 days), claiming only from the protocol's own points page,
-and a farm log. Each step states its cost and time.
+**Farm plans.** 6 steps per protocol, 7 when it runs on more than one chain, each
+20–600 characters, from a playbook with one row per kind of protocol (duplicated in
+`dashboard/app.js` so the detail view recomputes the same plan the board carries):
+a fresh wallet with gas sized by the main chain, a category-specific qualifying
+action with capital sized by TVL tier ($50/$100/$150/$250), a category-specific
+weekly action that uses only the funded capital, a hold period sized by age
+(30/45/60 days), claiming only from the protocol's own points page, a repeat on a
+second chain for multi-chain protocols, and a farm log naming the protocol. Every
+category on the board has its own playbook row — no protocol falls back to a
+generic plan (radar-2 left 13 rows on the generic action and repeated the same
+weekly and claim steps on all 198 rows).
 
 ## Top of the board (snapshot 2026-11-14)
 
-1. Steakhouse Financial — TVL $2.75B, implied $2.12B (Risk Curators)
-2. Sentora Curator — implied $2.00B
-3. Gauntlet — implied $1.26B
+1. Steakhouse Financial — TVL $2.75B, implied $1.64B (Risk Curators)
+2. Sentora Curator — implied $1.54B
+3. Gauntlet — implied $974.3M
 4. Polymarket International — implied $318.5M
-5. Nonce Capital — implied $277.8M
-6. RockawayX — implied $193.2M
+5. Veda — implied $236.3M
+6. Nonce Capital — implied $214.1M
 
 ## Run it
 
@@ -84,22 +100,27 @@ plan, a model explainer with the formula and the top-12 category
 calibration table, and hash state (`#q`, `#category`, `#chain`, `#tab`,
 `#sort`, `#p`).
 
-## Local verification (15 Nov 2026)
+## Local verification (16 Nov 2026, v2 / radar-3)
 
 - Two runs into `out/` and `out2/`: **byte-identical**.
 - Gate validator (`research/validate_gate.mjs`, a local replica of the
   seven gate rows in RULES.txt): **all 7 PASS** — dashboard files (3 files,
-  34,843 bytes, no http/https), board file (198 rows), sorted by value
+  41,510 bytes, no http/https), board file (198 rows), sorted by value
   (ranks 1..198, non-increasing implied, all distinct), coverage (40/40
   watchlist slugs), farm steps (all 3–12 steps, 20–600 chars), screenshots
-  (3 PNGs, 1440x900, 137–199 KB each, under the 512 KiB cap),
-  dossier matches (byte-identical to `buildDossier`, 679,497 bytes,
-  dossier text 35,107 bytes — under the 65,536 cap, so the judge reads the
+  (3 PNGs, 1440x900, 141–227 KB each, under the 512 KiB cap),
+  dossier matches (byte-identical to `buildDossier`, 732,287 bytes,
+  dossier text 41,766 bytes — under the 65,536 cap, so the judge reads the
   whole dashboard source).
+- Dialog check (`research/verify_steps.mjs`, Playwright + Chromium 157):
+  for **all 198 rows** the detail dialog's farm steps are byte-identical to
+  the steps board.json carries, the page's recomputed implied value matches
+  board.json, and **no dialog needs scrolling at 1440x900** — all 6–7 farm
+  steps are visible (radar-2's dialog cut off steps 5–6).
 - Screenshots were taken with the VM's Chromium 157
   (`/opt/meta-chromium/chrome`) via Playwright, from the real dashboard —
   visually checked: board, detail dialog, and filtered view all render
-  correctly.
+  correctly, with the new radar-3 values throughout.
 - **No local grade exists for this competition** (server grades only), so
   no score or provisional rank can be quoted. The kit CLI offers no
   grade-local command for token-radar-01.
@@ -108,7 +129,7 @@ calibration table, and hash state (`#q`, `#category`, `#chain`, `#tab`,
 
 ```
 main.ts            entry point
-lib/model.ts       radar-2 model, rankable rule, farm plans
+lib/model.ts       radar-3 model, rankable rule, farm plans
 vendor/            makefun-board.ts (kit code, unmodified)
 dashboard/         index.html, app.css, app.js (static, offline)
 screenshots/       1-board.png, 2-detail.png, 3-filtered.png

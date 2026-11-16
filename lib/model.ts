@@ -9,16 +9,33 @@
 // Implied value follows only from the snapshot's own figures, and no protocol name is ever
 // special-cased: the same function scores every row.
 //
-//   category multiple = the shrunk median FDV/TVL of the live-token protocols in the same category,
-//                       measured from this snapshot. A category with few live protocols shrinks
-//                       toward the overall median, so a single outlier cannot set the multiple.
-//                       (prior weight 3, clamped to [0.05, 1.00])
+//   category multiple = the shrunk median market-cap/TVL of the live-token protocols in the same
+//                       category, measured from this snapshot. The snapshot carries market caps, not
+//                       fully diluted values, so the ratio is named for what it is. Two hardenings
+//                       over radar-2: each live protocol's ratio is winsorised at x5 before any
+//                       median is taken (one tiny protocol must not set a 400x median — radar-2's
+//                       Prediction Market median was 400.2x from a single protocol, Rain), and the
+//                       overall median that shrinks every category is taken over a clean prior pool
+//                       only — CEX, bridge and liquid-staking receipts are left out, because their
+//                       ratios reflect custody and staking mechanics, not app-token value. Shrinkage
+//                       is stronger (prior weight 3 -> 5): with one live protocol a category's
+//                       multiple is now 1/6 its own median and 5/6 the prior. The Risk Curators
+//                       multiple falls from 0.904 to 0.696 — it rested on one live protocol, Api3
+//                       (an oracle, not a vault curator), and there is no true curator comp in the
+//                       snapshot (Morpho Blue is pre-token). (clamped to [0.05, 1.00]; a category
+//                       with no live protocol takes the overall median.)
 //   base       = tvl_usd x category_multiple
 //   growth     = clamp(change_7d, -60, 120) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
 //   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
 //   breadth    = 1 + 0.02 x min(chains - 1, 4)            (more chains, wider distribution)
 //   implied    = max(1, round(base x growthMult x maturity x breadth))
+//
+// Farm plans are derived per protocol from its category (a playbook table below, duplicated in
+// dashboard/app.js so the detail view recomputes the same plan the board carries): a fresh-wallet
+// step with gas sized by the main chain, a category-specific qualifying action with capital sized by
+// TVL tier, a category-specific weekly action, a hold period sized by age, claiming only from the
+// protocol's own points page, a repeat on a second chain for multi-chain protocols, and a farm log.
 //
 // The constants are stated in the dashboard and changeable in the model sandbox.
 
@@ -47,7 +64,7 @@ export interface Snapshot {
 
 /** The model's constants, as the dashboard states them and the sandbox may change them. */
 export interface ModelConstants {
-  base_multiple: number;
+  winsor_cap: number;
   growth_weight: number;
   growth_floor: number;
   growth_cap: number;
@@ -63,7 +80,7 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  base_multiple: 0.205,
+  winsor_cap: 5,
   growth_weight: 0.5,
   growth_floor: -60,
   growth_cap: 120,
@@ -71,7 +88,7 @@ export const MODEL: ModelConstants = {
   maturity_range: 0.4,
   maturity_days: 1095,
   unknown_age_days: 365,
-  prior_weight: 3,
+  prior_weight: 5,
   multiple_floor: 0.05,
   multiple_cap: 1.0,
   breadth_per_chain: 0.02,
@@ -79,7 +96,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -95,7 +112,7 @@ export interface FarmStep {
 export interface CalibrationRow {
   category: string;
   live_count: number;
-  median_fdvtvl: number | null;
+  median_mcaptvl: number | null;
   multiple: number;
 }
 
@@ -165,6 +182,8 @@ export interface RadarData {
   floor_usd: number;
   model: ModelConstants;
   model_version: string;
+  /** The overall median the multiples shrink toward, so the dashboard can print it exactly. */
+  overall_multiple: number;
   watchlist_size: number;
   board_size: number;
   early_size: number;
@@ -208,22 +227,33 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 
 /**
  * The category calibration, measured from this snapshot alone: for every category, the median
- * FDV/TVL (market cap over TVL) of its live-token protocols, shrunk toward the overall median with
- * a prior weight, so a category with one or two live protocols cannot set an extreme multiple.
- * Categories with no live protocol take the overall median. Every multiple is clamped to the
- * model's floor and cap, and rounded to four decimals so the dashboard can print it exactly.
+ * market-cap/TVL of its live-token protocols, shrunk toward the overall median with a prior weight,
+ * so a category with one or two live protocols cannot set an extreme multiple. Each ratio is
+ * winsorised at the model's cap before any median is taken, and the overall median comes from a clean
+ * prior pool that leaves out CEX, bridge and liquid-staking receipts (their ratios reflect custody and
+ * staking mechanics, not app-token value). Categories with no live protocol take the overall median.
+ * Every multiple is clamped to the model's floor and cap, and rounded to four decimals so the
+ * dashboard can print it exactly.
  */
+// The same categories the board refuses to rank (a wrapped, staked or bridged product of a token that
+// already trades) are left out of the prior pool: their ratios are not what a new launch looks like.
+const PRIOR_POOL_EXCLUDE = new Set(['Bridge', 'Canonical Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaked BTC', 'CEX']);
+
 export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): { byCategory: Map<string, number>; rows: CalibrationRow[]; overall: number } {
   // A market cap of zero is no market cap at all: only a positive one counts as a live token.
   const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
-  const all = live.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
-  const overall = median(all);
+  const ratio = (p: SnapshotProtocol): number => Math.min(p.mcap_usd! / p.tvl_usd, model.winsor_cap);
+  const priorPool = live
+    .filter((p) => p.category === null || !PRIOR_POOL_EXCLUDE.has(p.category))
+    .map(ratio)
+    .sort((a, b) => a - b);
+  const overall = median(priorPool);
   const byCat = new Map<string, number[]>();
   for (const p of live) {
     const key = p.category ?? 'Other';
     const arr = byCat.get(key);
-    if (arr) arr.push(p.mcap_usd! / p.tvl_usd);
-    else byCat.set(key, [p.mcap_usd! / p.tvl_usd]);
+    if (arr) arr.push(ratio(p));
+    else byCat.set(key, [ratio(p)]);
   }
   const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
   const multipleFor = (category: string | null): number => {
@@ -242,7 +272,7 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): { 
     const med = vals && vals.length > 0 ? median([...vals].sort((a, b) => a - b)) : null;
     const multiple = multipleFor(cat === 'Other' ? null : cat);
     byCategory.set(cat, multiple);
-    rows.push({ category: cat, live_count: vals ? vals.length : 0, median_fdvtvl: med === null ? null : round4(med), multiple });
+    rows.push({ category: cat, live_count: vals ? vals.length : 0, median_mcaptvl: med === null ? null : round4(med), multiple });
   }
   rows.sort((a, b) => b.multiple - a.multiple || (a.category < b.category ? -1 : 1));
   return { byCategory, rows, overall };
@@ -391,50 +421,152 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** The category's one action, in the words a farmer can follow. */
-function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
-  const c = (p.category ?? '').toLowerCase();
-  const name = p.name;
-  if (c.includes('risk curator') || c.includes('curator') || c.includes('allocator')) return `Deposit $${capital} into a ${name} vault on ${chain} and keep the shares for the whole season.`;
-  if (c.includes('basis trading')) return `Deposit $${capital} of USDC into ${name}'s basis strategy on ${chain} and keep the position open.`;
-  if (c.includes('rwa')) return `Mint $${capital} of the protocol's tokenised yield asset through ${name} on ${chain} and hold it.`;
-  if (c.includes('lending') || c.includes('cdp') || c.includes('collateral')) return `Supply $${capital} of USDC to ${name} on ${chain} and keep the position open.`;
-  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return `Provide $${capital} of liquidity to ${name}'s main pool on ${chain} and keep the position open.`;
-  if (c.includes('bridge')) return `Bridge $${capital} of USDC to ${chain} through ${name} and use the bridged funds in its app.`;
-  if (c.includes('staking') || c.includes('restak')) return `Stake $${capital} of the chain's staking asset through ${name} and keep the receipt token.`;
-  if (c.includes('perpetual') || c.includes('derivative')) return `Deposit $${capital} of USDC as margin on ${name} and open one small hedged trade.`;
-  if (c.includes('prediction')) return `Fund $${capital} and place one market position on ${name}.`;
-  if (c.includes('stable')) return `Mint or deposit $${capital} of the stable asset through ${name} on ${chain} and hold it.`;
-  if (c.includes('insurance')) return `Buy $${capital} of cover from ${name} on ${chain} and keep the policy active.`;
-  if (c.includes('payment')) return `Route $${capital} of payments through ${name} on ${chain} and keep the account funded.`;
-  if (c.includes('governance')) return `Lock $${capital} of voting power with ${name} on ${chain} and vote on one proposal.`;
-  if (c.includes('chain')) return `Bridge $${capital} to the chain and use ${name}'s native app on ${chain} once a week.`;
-  return `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`;
+/** One playbook row: what a farmer does in a protocol of this kind. */
+export interface FarmPlay {
+  /** The main qualifying position. */
+  action: string;
+  /** The recurring qualifying action, repeated weekly, using only the funded capital. */
+  weekly: string;
+  /** What to claim, and where. */
+  claim: string;
 }
 
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived from
- * the protocol's own record (category, chains, TVL, age), never from a hand-written list of names.
+ * The farm playbook, one row per kind of protocol. The dashboard duplicates this table
+ * (dashboard/app.js) so the detail view recomputes the same plan the board carries; the two copies
+ * must stay identical. Keys are matched as substrings of the lowercase category, in order, first
+ * match wins — 'index' is checked before 'dex' because "Indexes" contains "dex", 'liquidity manager'
+ * before 'chain' because no earlier key may claim it, and 'farm' after 'leveraged farm' because
+ * "Leveraged Farming" contains "farm". Every category on the board has its own row: no protocol
+ * falls back to the generic plan.
+ */
+function farmPlaybook(p: SnapshotProtocol, capital: number, chain: string): FarmPlay {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  const art = /^[aeiou]/i.test(name) ? 'an' : 'a';
+  if (c.includes('index')) return {
+    action: `Buy $${capital} of the ${name} index on ${chain} and hold it.`,
+    weekly: `Rebalance a small amount into the index.`,
+    claim: `Claim index rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('curator') || c.includes('allocator')) return {
+    action: `Deposit $${capital} into ${art} ${name} vault on ${chain} and keep the shares for the whole season.`,
+    weekly: `Move a small amount between two of ${name}\u2019s vaults, or claim and restake the vault rewards.`,
+    claim: `Claim vault rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('basis trading')) return {
+    action: `Deposit $${capital} of USDC into ${name}\u2019s basis strategy on ${chain} and keep the position open.`,
+    weekly: `Check the funding rate and roll a small part of the basis position.`,
+    claim: `Claim basis yield from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('rwa')) return {
+    action: `Mint $${capital} of the protocol\u2019s tokenised yield asset through ${name} on ${chain} and hold it.`,
+    weekly: `Check the yield accrual on the tokenised asset and claim any yield into the same position.`,
+    claim: `Claim the accrued yield from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('lending') || c.includes('cdp') || c.includes('collateral')) return {
+    action: `Supply $${capital} of USDC to ${name} on ${chain} and keep the position open.`,
+    weekly: `Borrow a small amount against the deposit and repay it, so the position shows both sides.`,
+    claim: `Claim supply rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm')) return {
+    action: `Provide $${capital} of liquidity to ${name}\u2019s main pool on ${chain} and keep the position open.`,
+    weekly: `Swap a small amount through the pool and claim any liquidity rewards.`,
+    claim: `Claim pool fees and rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('liquidity manager')) return {
+    action: `Deposit $${capital} into ${art} ${name} managed vault on ${chain} and keep the shares for the whole season.`,
+    weekly: `Claim and restake a small amount of the vault rewards.`,
+    claim: `Claim vault rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('bridge')) return {
+    action: `Bridge $${capital} of USDC to ${chain} through ${name} and use the bridged funds in its app.`,
+    weekly: `Bridge a small amount out and back through ${name}.`,
+    claim: `Check ${name}\u2019s rewards page for bridge volume points, only from the link it publishes.` };
+  if (c.includes('staking') || c.includes('restak')) return {
+    action: `Stake $${capital} of the chain\u2019s staking asset through ${name} and keep the receipt token.`,
+    weekly: `Restake the staking rewards into the same position.`,
+    claim: `Claim staking rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('perpetual') || c.includes('derivative')) return {
+    action: `Deposit $${capital} of USDC as margin on ${name} and open one small hedged trade.`,
+    weekly: `Open and close one small hedged trade on ${name}.`,
+    claim: `Claim trading fee rebates from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('prediction')) return {
+    action: `Fund $${capital} and place one market position on ${name}.`,
+    weekly: `Place one small market position and let it settle.`,
+    claim: `Claim market winnings and any points from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('stable')) return {
+    action: `Mint or deposit $${capital} of the stable asset through ${name} on ${chain} and hold it.`,
+    weekly: `Mint or redeem a small amount of the stable asset through ${name}.`,
+    claim: `Claim stability rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('insurance')) return {
+    action: `Buy $${capital} of cover from ${name} on ${chain} and keep the policy active.`,
+    weekly: `Review the cover and renew a small part of it.`,
+    claim: `Claim cover rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('payment')) return {
+    action: `Route $${capital} of payments through ${name} on ${chain} and keep the account funded.`,
+    weekly: `Route one payment through ${name}.`,
+    claim: `Check ${name}\u2019s rewards page for payment volume points, only from the link it publishes.` };
+  if (c.includes('governance')) return {
+    action: `Lock $${capital} of voting power with ${name} on ${chain} and vote on one proposal.`,
+    weekly: `Vote on one live proposal with ${name}.`,
+    claim: `Claim voting rewards from ${name}\u2019s governance page, only from the link it publishes.` };
+  if (c.includes('otc')) return {
+    action: `Place $${capital} in an OTC order through ${name} on ${chain} and settle it.`,
+    weekly: `Settle one small OTC order through ${name}.`,
+    claim: `Check ${name}\u2019s rewards page for trading points, only from the link it publishes.` };
+  if (c.includes('farm')) return {
+    action: `Deposit $${capital} into ${name}\u2019s farm on ${chain} and keep the position open.`,
+    weekly: `Harvest and restake a small amount of farm rewards.`,
+    claim: `Claim farm rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('anchor') || c.includes('decentralized btc')) return {
+    action: `Mint $${capital} of the BTC-backed asset through ${name} on ${chain} and hold it.`,
+    weekly: `Mint or redeem a small amount of the BTC-backed asset through ${name}.`,
+    claim: `Claim mint rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('cedefi')) return {
+    action: `Deposit $${capital} into ${name}\u2019s vault on ${chain} and keep the position open.`,
+    weekly: `Check the vault\u2019s yield and claim any rewards into the same position.`,
+    claim: `Claim vault rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('card')) return {
+    action: `Fund $${capital} on the ${name} card on ${chain} and keep the balance active.`,
+    weekly: `Spend a small amount through the ${name} card.`,
+    claim: `Claim card rewards from ${name}\u2019s own page, only from the link it publishes.` };
+  if (c.includes('chain')) return {
+    action: `Bridge $${capital} to the chain and use ${name}\u2019s native app on ${chain} once a week.`,
+    weekly: `Use ${name}\u2019s native app on ${chain} once.`,
+    claim: `Check ${name}\u2019s rewards page for activity points, only from the link it publishes.` };
+  return {
+    action: `Deposit $${capital} of USDC into ${name} on ${chain} and keep the position open.`,
+    weekly: `Make one qualifying on-chain action on ${name}, such as a deposit, a swap or a vote.`,
+    claim: `Open ${name}\u2019s own points or rewards page and claim only from the link it publishes.` };
+}
+
+/** The gas a first transaction costs on the protocol's main chain: Ethereum is dear, the rest is not. */
+function setupGas(chain: string): number {
+  if (chain === 'Ethereum') return 8;
+  if (chain === 'Bitcoin') return 2;
+  return 4;
+}
+
+/**
+ * A protocol's farm plan: six steps, seven when it runs on more than one chain. The plan is derived
+ * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of
+ * names: a fresh wallet, the playbook's qualifying action with capital sized by TVL tier, the
+ * playbook's weekly action, a hold period sized by age, the playbook's claim step, a repeat on a
+ * second chain for multi-chain protocols, and a farm log naming the protocol.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
-  const action = actionFor(p, capital, chain);
-  return [
+  const play = farmPlaybook(p, capital, chain);
+  const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: 'nothing but the wallet',
       time: '5 minutes',
     },
     {
-      text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      text: play.action,
+      cost: `$${capital} of capital and about $${setupGas(chain)} of gas`,
       time: '15 minutes to set up',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
+      text: play.weekly,
+      cost: 'no new capital',
       time: '10 minutes a week',
     },
     {
@@ -443,16 +575,24 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
+      text: play.claim,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
-    {
-      text: `Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
-      cost: 'nothing but the log',
-      time: '5 minutes',
-    },
   ];
+  if (p.chains.length >= 2) {
+    steps.push({
+      text: `Repeat the position on ${p.chains[1]} with half the amount, so the activity is visible on more than one network.`,
+      cost: `$${Math.round(capital / 2)} of capital and about $2 of gas`,
+      time: '20 minutes',
+    });
+  }
+  steps.push({
+    text: `Write the wallet, the dates and every transaction for ${p.name} in a farm log, so you can repeat the position and prove it later.`,
+    cost: 'nothing but the log',
+    time: '5 minutes',
+  });
+  return steps;
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
@@ -506,6 +646,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model,
     model_version: MODEL_VERSION,
+    overall_multiple: round4(calibration.overall),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: early,
